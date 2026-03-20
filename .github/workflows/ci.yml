@@ -1,0 +1,124 @@
+# ci.yml
+# -------------------------------------------------------------------------
+# Triggered on every pull request to main.
+# Runs three jobs in parallel:
+#   1. lint    — Terraform fmt/validate, Python linting
+#   2. test    — FastAPI unit tests with pytest
+#   3. build   — Docker image build (no push on PR)
+# -------------------------------------------------------------------------
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── 1. Lint ──────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform Format Check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init (no backend)
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install linting tools
+        run: pip install ruff
+
+      - name: Ruff lint
+        working-directory: app
+        run: ruff check .
+
+  # ── 2. Test ──────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    # Spin up a real Postgres for integration tests
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sentinellink_admin
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: sentinellink_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: app
+        run: pip install -r requirements.txt pytest pytest-cov httpx
+
+      - name: Run tests
+        working-directory: app
+        env:
+          DB_USER: sentinellink_admin
+          DB_PASSWORD: testpassword
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: sentinellink_test
+        run: pytest --cov=. --cov-report=xml -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: app/coverage.xml
+
+  # ── 3. Docker Build ──────────────────────────────────────────────────────
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app
+          push: false
+          tags: sentinellink:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
