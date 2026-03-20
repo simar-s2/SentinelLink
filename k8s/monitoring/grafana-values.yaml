@@ -1,0 +1,165 @@
+# grafana-values.yaml
+# -------------------------------------------------------------------------
+# Helm values for the Grafana chart.
+# Install with:
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm repo update
+#   helm install grafana grafana/grafana \
+#     -n monitoring --create-namespace \
+#     -f k8s/monitoring/grafana-values.yaml
+# -------------------------------------------------------------------------
+
+replicas: 1
+
+# Admin credentials — override these via a Kubernetes Secret in production,
+# never leave the default password in place.
+adminUser: admin
+adminPassword: "changeme-use-a-secret-in-production"
+
+service:
+  type: ClusterIP
+  port: 80
+
+# ── Datasources — auto-provision Prometheus ──────────────────────────────────
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        access: proxy
+        isDefault: true
+
+# ── Dashboards — auto-provision from ConfigMaps ──────────────────────────────
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: sentinellink
+        orgId: 1
+        folder: "SentinelLink"
+        type: file
+        disableDeletion: true
+        editable: false
+        options:
+          path: /var/lib/grafana/dashboards/sentinellink
+
+dashboards:
+  sentinellink:
+    asset-security-overview:
+      json: |
+        {
+          "title": "SentinelLink — Asset Security Overview",
+          "uid": "sentinellink-security",
+          "schemaVersion": 38,
+          "refresh": "30s",
+          "panels": [
+            {
+              "id": 1,
+              "title": "Total Registered Assets",
+              "type": "stat",
+              "targets": [
+                {
+                  "expr": "sentinellink_assets_total",
+                  "legendFormat": "Total"
+                }
+              ],
+              "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 }
+            },
+            {
+              "id": 2,
+              "title": "Unencrypted Assets (must be 0)",
+              "type": "stat",
+              "targets": [
+                {
+                  "expr": "sentinellink_assets_unencrypted_total",
+                  "legendFormat": "Unencrypted"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "steps": [
+                      { "value": 0, "color": "green" },
+                      { "value": 1, "color": "red" }
+                    ]
+                  }
+                }
+              },
+              "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 }
+            },
+            {
+              "id": 3,
+              "title": "Public Assets (must be 0)",
+              "type": "stat",
+              "targets": [
+                {
+                  "expr": "sentinellink_assets_public_total",
+                  "legendFormat": "Public"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "steps": [
+                      { "value": 0, "color": "green" },
+                      { "value": 1, "color": "red" }
+                    ]
+                  }
+                }
+              },
+              "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 }
+            },
+            {
+              "id": 4,
+              "title": "Request Rate (req/s)",
+              "type": "timeseries",
+              "targets": [
+                {
+                  "expr": "rate(http_requests_total{job='sentinellink-pods'}[5m])",
+                  "legendFormat": "{{method}} {{handler}}"
+                }
+              ],
+              "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 }
+            },
+            {
+              "id": 5,
+              "title": "Error Rate (5xx)",
+              "type": "timeseries",
+              "targets": [
+                {
+                  "expr": "rate(http_requests_total{job='sentinellink-pods', status=~'5..'}[5m])",
+                  "legendFormat": "5xx errors"
+                }
+              ],
+              "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 }
+            },
+            {
+              "id": 6,
+              "title": "Assets by Environment",
+              "type": "piechart",
+              "targets": [
+                {
+                  "expr": "sentinellink_assets_by_environment",
+                  "legendFormat": "{{environment}}"
+                }
+              ],
+              "gridPos": { "x": 0, "y": 12, "w": 8, "h": 8 }
+            }
+          ]
+        }
+
+# ── Persistence — store dashboards across pod restarts ───────────────────────
+persistence:
+  enabled: true
+  size: 1Gi
+
+# ── Resource limits ───────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "300m"
+    memory: "256Mi"
