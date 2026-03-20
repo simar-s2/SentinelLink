@@ -1,0 +1,181 @@
+# deploy.yml
+# -------------------------------------------------------------------------
+# Triggered on every push to main (i.e. merged PR).
+# Jobs run sequentially:
+#   1. build-push  — Build Docker image, tag with SHA, push to ECR
+#   2. tf-plan     — Run terraform plan and post output as a summary
+#   3. tf-apply    — Apply Terraform changes (requires plan to succeed)
+#   4. helm-deploy — Upgrade the Helm release with the new image tag
+# -------------------------------------------------------------------------
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: sentinellink
+  EKS_CLUSTER_NAME: sentinellink-cluster
+  HELM_RELEASE: sentinellink
+  HELM_NAMESPACE: sentinellink
+
+jobs:
+  # ── 1. Build & push image to ECR ─────────────────────────────────────────
+  build-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.sha_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC — no long-lived keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "sha_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 2. Terraform plan ────────────────────────────────────────────────────
+  tf-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: build-push
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan -out=tfplan -no-color 2>&1 | tee plan.txt
+
+      - name: Post plan to job summary
+        run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat terraform/plan.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+
+  # ── 3. Terraform apply ───────────────────────────────────────────────────
+  tf-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: tf-plan
+    environment: production   # Requires manual approval in GitHub Environments
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+  # ── 4. Helm deploy ───────────────────────────────────────────────────────
+  helm-deploy:
+    name: Helm Upgrade
+    runs-on: ubuntu-latest
+    needs: [build-push, tf-apply]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "3.14.4"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Helm upgrade (rolling deploy, zero downtime)
+        run: |
+          helm upgrade ${{ env.HELM_RELEASE }} ./helm/sentinellink \
+            --namespace ${{ env.HELM_NAMESPACE }} \
+            --create-namespace \
+            --set image.repository=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }} \
+            --set image.tag=${{ needs.build-push.outputs.image_tag }} \
+            --atomic \
+            --timeout 5m \
+            --wait
