@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+data:
+  AWS_REGION: {{ .Values.env.AWS_REGION | quote }}
+  ALLOWED_ORIGINS: {{ .Values.env.ALLOWED_ORIGINS | quote }}
+  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
+  # DB_SECRET_ARN is sensitive enough to keep out of plain ConfigMap in
+  # real production; here it's included for simplicity and matches the
+  # pattern of injecting non-secret config from Helm values.
+  DB_SECRET_ARN: {{ .Values.env.DB_SECRET_ARN | quote }}
