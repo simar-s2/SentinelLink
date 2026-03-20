@@ -1,0 +1,87 @@
+# ── Replica count (overridden by HPA once load is detected) ─────────────────
+replicaCount: 2
+
+# ── Container image ──────────────────────────────────────────────────────────
+image:
+  repository: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/sentinellink
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# ── Service ──────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP   # Internal only — fronted by an ingress or ALB in production
+  port: 80
+  targetPort: 8000
+
+# ── ServiceAccount — IRSA annotation injected here ──────────────────────────
+serviceAccount:
+  create: true
+  name: sentinellink-sa
+  annotations:
+    # This ARN is output by Terraform (terraform output irsa_role_arn)
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<ACCOUNT_ID>:role/sentinellink-irsa-role"
+
+# ── Application environment variables ────────────────────────────────────────
+env:
+  AWS_REGION: "us-east-1"
+  # DB_SECRET_ARN is injected here; the app uses it to call Secrets Manager.
+  # Set this to the value of: terraform output db_secret_arn
+  DB_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:sentinellink/db-credentials"
+  ALLOWED_ORIGINS: "http://localhost:3000"
+  LOG_LEVEL: "INFO"
+
+# ── Kubernetes namespace ──────────────────────────────────────────────────────
+namespace: sentinellink
+
+# ── Resource requests & limits ───────────────────────────────────────────────
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+# ── Horizontal Pod Autoscaler ────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# ── Liveness and readiness probes ────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8000
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+# ── Prometheus scraping ───────────────────────────────────────────────────────
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+
+# ── Security context — enforce non-root execution ────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
