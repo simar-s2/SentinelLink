@@ -1,0 +1,23 @@
+# Copy this file to terraform.tfvars, fill in the values, and NEVER commit it.
+# terraform.tfvars is listed in .gitignore.
+
+aws_region  = "us-east-1"
+environment = "production"
+
+vpc_cidr             = "10.0.0.0/16"
+private_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24"]
+availability_zones   = ["us-east-1a", "us-east-1b"]
+
+s3_bucket_name = "sentinellink-asset-registry"
+
+rds_instance_class  = "db.t3.micro"
+rds_db_name         = "sentinellink"
+rds_master_username = "sentinellink_admin"
+
+# Obtain these from your EKS cluster after creation:
+#   aws eks describe-cluster --name <cluster> --query "cluster.identity.oidc.issuer"
+eks_oidc_provider_arn = "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/<OIDC_ID>"
+eks_oidc_provider_url = "oidc.eks.us-east-1.amazonaws.com/id/<OIDC_ID>"
+
+k8s_namespace            = "sentinellink"
+k8s_service_account_name = "sentinellink-sa"
