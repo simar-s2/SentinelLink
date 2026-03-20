@@ -1,0 +1,21 @@
+apiVersion: v2
+name: sentinellink
+description: >
+  Helm chart for SentinelLink — a secure asset registry microservice.
+  Deploys the FastAPI application with IRSA-annotated ServiceAccount,
+  ConfigMap-driven configuration, HPA for autoscaling, and Prometheus
+  scraping annotations.
+
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - security
+  - infrastructure
+  - asset-registry
+  - aws
+  - fastapi
+
+maintainers:
+  - name: SentinelLink Team
