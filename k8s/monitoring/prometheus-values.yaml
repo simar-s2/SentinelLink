@@ -1,0 +1,101 @@
+# prometheus-values.yaml
+# -------------------------------------------------------------------------
+# Helm values for the kube-prometheus-stack chart.
+# Install with:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install prometheus prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     -f k8s/monitoring/prometheus-values.yaml
+# -------------------------------------------------------------------------
+
+# We manage Grafana separately via its own values file
+grafana:
+  enabled: false
+
+# Scrape interval — short enough to catch anomalies in near real-time
+prometheus:
+  prometheusSpec:
+    scrapeInterval: "15s"
+    evaluationInterval: "15s"
+    retention: "15d"
+
+    # Only pick up ServiceMonitors and PodMonitors in any namespace,
+    # not just the prometheus namespace — required to scrape sentinellink pods
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+    # Extra scrape config for pods annotated with prometheus.io/scrape=true
+    # This is the fallback for pods that don't use a ServiceMonitor CRD.
+    additionalScrapeConfigs:
+      - job_name: "sentinellink-pods"
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - sentinellink
+        relabel_configs:
+          # Only scrape pods that explicitly opt in
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          # Use the port declared in the annotation
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: (.+)
+            replacement: $1
+          # Use the path declared in the annotation (defaults to /metrics)
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Enrich metrics with pod metadata
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+
+# ── Alerting rules ──────────────────────────────────────────────────────────
+# These rules fire alerts for security-relevant anomalies.
+additionalPrometheusRulesMap:
+  sentinellink-security:
+    groups:
+      - name: sentinellink.security
+        rules:
+          # Alert if any asset is registered as public (is_public=1 is a policy violation)
+          - alert: PublicAssetDetected
+            expr: sentinellink_assets_public_total > 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Public asset detected in registry"
+              description: >
+                {{ $value }} asset(s) are marked public in the SentinelLink registry.
+                Zero public exposure is required. Investigate immediately.
+
+          # Alert if the asset registry API goes down
+          - alert: SentinelLinkDown
+            expr: up{job="sentinellink-pods"} == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "SentinelLink API is unreachable"
+              description: "No SentinelLink pods are being scraped. Service may be down."
+
+          # Alert on high error rate (5xx responses)
+          - alert: HighErrorRate
+            expr: >
+              rate(http_requests_total{job="sentinellink-pods", status=~"5.."}[5m])
+              /
+              rate(http_requests_total{job="sentinellink-pods"}[5m]) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "SentinelLink error rate above 5%"
+              description: "More than 5% of requests are returning 5xx errors."
